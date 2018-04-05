@@ -6,19 +6,20 @@ import lombok.NoArgsConstructor;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
-import org.springframework.web.reactive.function.server.RouterFunction;
-import org.springframework.web.reactive.function.server.ServerResponse;
+import org.springframework.web.reactive.function.server.*;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 import static org.springframework.web.reactive.function.server.RequestPredicates.GET;
 import static org.springframework.web.reactive.function.server.RouterFunctions.route;
+import static org.springframework.web.reactive.function.server.ServerResponse.*;
 
 @SpringBootApplication
 public class GreetingsServiceApplication {
 
 		@Bean
 		RouterFunction<ServerResponse> greetings() {
-				return route(GET("/hi"), request -> ServerResponse.ok().body(Flux.just(new Greeting("Hello, world")), Greeting.class));
+				return route(GET("/greetings"), req -> ok().body(Flux.just(new Greeting("Hello!")), Greeting.class));
 		}
 
 		public static void main(String[] args) {
@@ -26,9 +27,11 @@ public class GreetingsServiceApplication {
 		}
 }
 
+
 @Data
 @AllArgsConstructor
 @NoArgsConstructor
 class Greeting {
-		private String text;
+
+		private String value;
 }

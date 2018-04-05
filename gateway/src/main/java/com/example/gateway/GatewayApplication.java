@@ -1,11 +1,13 @@
 package com.example.gateway;
 
+import org.reactivestreams.Publisher;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.cloud.client.loadbalancer.reactive.LoadBalancerExchangeFilterFunction;
 import org.springframework.cloud.gateway.filter.ratelimit.RedisRateLimiter;
 import org.springframework.cloud.gateway.route.RouteLocator;
 import org.springframework.cloud.gateway.route.builder.RouteLocatorBuilder;
+import org.springframework.cloud.netflix.hystrix.HystrixCommands;
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.security.config.web.server.ServerHttpSecurity;
@@ -27,11 +29,29 @@ import static org.springframework.web.reactive.function.server.RouterFunctions.r
 public class GatewayApplication {
 
 		@Bean
-		WebClient client(LoadBalancerExchangeFilterFunction eff) {
-				return WebClient
-					.builder()
-					.filter(eff)
+		MapReactiveUserDetailsService authentication() {
+				UserDetails userDetails = User.withDefaultPasswordEncoder()
+					.username("user")
+					.password("password")
+					.roles("USER")
 					.build();
+				return new MapReactiveUserDetailsService(userDetails);
+		}
+
+		@Bean
+		SecurityWebFilterChain authorization(ServerHttpSecurity httpSecurity) {
+				//@formatter:off
+				return
+					httpSecurity
+					.csrf().disable()
+					.httpBasic()
+					.and()
+					.authorizeExchange()
+								.pathMatchers("/rl").authenticated()
+								.anyExchange().permitAll()
+					.and()
+					.build();
+				//@formatter:on
 		}
 
 		@Bean
@@ -40,70 +60,62 @@ public class GatewayApplication {
 		}
 
 		@Bean
-		RouterFunction<ServerResponse> routes(WebClient client) {
-
-				ParameterizedTypeReference<Map<String, String>> ptr =
-					new ParameterizedTypeReference<Map<String, String>>() {
-					};
-
-				return route(GET("/hello"), request -> {
-						Flux<String> greetings = client
-							.get()
-							.uri("http://greetings-service/hi")
-							.retrieve()
-							.bodyToFlux(ptr)
-							.map(m -> m.get("text"))
-							.map(String::toUpperCase);
-						return ServerResponse.ok().body(greetings, String.class);
-				});
-		}
-
-		@Bean
-		RouteLocator routeLocator(RouteLocatorBuilder rlb, RedisRateLimiter rl) {
-				return
-					rlb
-						.routes()
-						.route(r ->
-							r.path("/greetings")
-								.filters(fs ->
-									fs
-										.setPath("/hi")
-										.requestRateLimiter(c -> c.setRateLimiter(rl))
-								)
-								.uri("lb://greetings-service")
-						)
-						.route(r -> r
-							.host("*.gw.sc").and().path("/hi")  // curl -H"Host: bar.gw.sc" http://localhost:8010/hi
+		RouteLocator gateway(RouteLocatorBuilder rlb) {
+				return rlb
+					.routes()
+					.route(rs ->
+						rs
+							.host("*.gw.sc").and().path("/rl")
 							.filters(fs -> fs
-								.setPath("/hi")
+								.setPath("/greetings")
+								.requestRateLimiter(config -> config.setRateLimiter(redisRateLimiter())
+								)
 							)
 							.uri("lb://greetings-service")
-						)
-						.build();
+					)
+					.build();
 		}
 
+/*
+		@Bean
+		LoadBalancerExchangeFilterFunction loadBalancerExchangeFilterFunction(
+			LoadBalancerClient client) {
+				return new LoadBalancerExchangeFilterFunction(client);
+		}
+*/
 
 		@Bean
-		SecurityWebFilterChain authorization(ServerHttpSecurity http) {
-				return http
-					.csrf().disable()
-					.httpBasic()
-					.and()
-					.authorizeExchange()
-					.pathMatchers("/greetings").authenticated()
-					.anyExchange().permitAll()
-					.and()
+		WebClient client(LoadBalancerExchangeFilterFunction exchangeFilterFunction) {
+				return WebClient
+					.builder()
+					.filter(exchangeFilterFunction)
 					.build();
 		}
 
 		@Bean
-		MapReactiveUserDetailsService authentication() {
-				UserDetails userDetails = User.withDefaultPasswordEncoder()
-					.roles("USER")
-					.username("user")
-					.password("pw")
-					.build();
-				return new MapReactiveUserDetailsService(userDetails);
+		RouterFunction<ServerResponse> routes(WebClient client) {
+				return route(GET("/hi"), serverRequest -> {
+
+						ParameterizedTypeReference<Map<String, String>> ptr =
+							new ParameterizedTypeReference<Map<String, String>>() {
+							};
+
+						Flux<String> greetings = client
+							.get()
+							.uri("http://greetings-service/greetings")
+							.retrieve()
+							.bodyToFlux(ptr)
+							.map(map -> map.get("value"));
+
+						Publisher<String> circuitBreakerPublisher = HystrixCommands
+							.from(greetings)
+							.fallback(Flux.just("EEEK"))
+							.commandName("greetings")
+							.eager()
+							.build();
+
+						return ServerResponse.ok().body(circuitBreakerPublisher, String.class);
+				});
 		}
 
 		public static void main(String[] args) {
